@@ -17,77 +17,12 @@ const PORT = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize in-memory database with sample data
-const db = await AsyncDatabase.open(":memory:");
+const db = await AsyncDatabase.open("./pizza.sqlite");
 
-// Create tables
-await db.run(`
-  CREATE TABLE IF NOT EXISTS pizza_types (
-    pizza_type_id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    ingredients TEXT NOT NULL
-  )`);
-
-await db.run(`
-  CREATE TABLE IF NOT EXISTS pizzas (
-    pizza_id TEXT PRIMARY KEY,
-    pizza_type_id INTEGER,
-    size TEXT NOT NULL,
-    price REAL NOT NULL,
-    FOREIGN KEY (pizza_type_id) REFERENCES pizza_types(pizza_type_id)
-  )`);
-
-await db.run(`
-  CREATE TABLE IF NOT EXISTS orders (
-    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    time TEXT NOT NULL
-  )`);
-
-await db.run(`
-  CREATE TABLE IF NOT EXISTS order_details (
-    order_id INTEGER,
-    pizza_id TEXT,
-    quantity INTEGER,
-    FOREIGN KEY (order_id) REFERENCES orders(order_id),
-    FOREIGN KEY (pizza_id) REFERENCES pizzas(pizza_id)
-  )`);
-
-// Insert sample data
-await db.run(`INSERT INTO pizza_types (pizza_type_id, name, category, ingredients) VALUES 
-  (1, 'Margherita', 'Vegetarian', 'Tomato sauce, mozzarella, basil'),
-  (2, 'Pepperoni', 'Meat', 'Tomato sauce, mozzarella, pepperoni'),
-  (3, 'Vegetarian', 'Vegetarian', 'Tomato sauce, mushrooms, peppers, onions'),
-  (4, 'Hawaiian', 'Meat', 'Tomato sauce, ham, pineapple'),
-  (5, 'Supreme', 'Meat', 'Tomato sauce, pepperoni, sausage, mushrooms, peppers')`);
-
-await db.run(`INSERT INTO pizzas (pizza_id, pizza_type_id, size, price) VALUES 
-  ('1_small', 1, 'small', 10.99),
-  ('1_medium', 1, 'medium', 12.99),
-  ('1_large', 1, 'large', 14.99),
-  ('2_small', 2, 'small', 11.99),
-  ('2_medium', 2, 'medium', 13.99),
-  ('2_large', 2, 'large', 15.99),
-  ('3_small', 3, 'small', 10.99),
-  ('3_medium', 3, 'medium', 12.99),
-  ('3_large', 3, 'large', 14.99),
-  ('4_small', 4, 'small', 11.99),
-  ('4_medium', 4, 'medium', 13.99),
-  ('4_large', 4, 'large', 15.99),
-  ('5_small', 5, 'small', 12.99),
-  ('5_medium', 5, 'medium', 14.99),
-  ('5_large', 5, 'large', 16.99)`);
-
-server
-  .register(fastifyStatic, {
-    root: path.join(__dirname, "public"),
-    prefix: "/public/",
-    decorateReply: false,
-  })
-  .catch((err) => {
-    console.error("Failed to register static files", err);
-  });
+server.register(fastifyStatic, {
+  root: path.join(__dirname, "public"),
+  prefix: "/public/",
+});
 
 server.get("/api/pizzas", async function getPizzas(req, res) {
   const pizzasPromise = db.all(
@@ -221,6 +156,7 @@ server.post("/api/order", async function createOrder(req, res) {
   const { cart } = req.body;
 
   const now = new Date();
+  // forgive me Date gods, for I have sinned
   const time = now.toLocaleTimeString("en-US", { hour12: false });
   const date = now.toISOString().split("T")[0];
 
@@ -274,6 +210,7 @@ server.post("/api/order", async function createOrder(req, res) {
 });
 
 server.get("/api/past-orders", async function getPastOrders(req, res) {
+  await new Promise((resolve) => setTimeout(resolve, 5000));
   try {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = 20;
@@ -363,10 +300,7 @@ server.post("/api/contact", async function contactForm(req, res) {
 
 const start = async () => {
   try {
-    await server.listen({
-      port: PORT,
-      host: "0.0.0.0",
-    });
+    await server.listen({ port: PORT });
     console.log(`Server listening on port ${PORT}`);
   } catch (err) {
     console.error(err);
