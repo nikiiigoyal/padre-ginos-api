@@ -2,16 +2,7 @@ import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import path from "path";
 import { fileURLToPath } from "url";
-import pkg from "pg";
-const { Pool } = pkg;
-
-// Create a new connection pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,
-  },
-});
+import { AsyncDatabase } from "promised-sqlite3";
 
 const server = fastify({
   logger: {
@@ -26,34 +17,24 @@ const PORT = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const db = await AsyncDatabase.open("./pizza.sqlite");
+
 server.register(fastifyStatic, {
   root: path.join(__dirname, "public"),
   prefix: "/public/",
 });
 
-// Helper function to execute queries
-async function query(text, params = []) {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(text, params);
-    return result.rows;
-  } finally {
-    client.release();
-  }
-}
-
 server.get("/api/pizzas", async function getPizzas(req, res) {
-  const pizzasPromise = query(`
-    SELECT pizza_type_id, name, category, ingredients as description 
-    FROM pizza_types
-  `);
-
-  const pizzaSizesPromise = query(`
-    SELECT 
+  const pizzasPromise = db.all(
+    "SELECT pizza_type_id, name, category, ingredients as description FROM pizza_types"
+  );
+  const pizzaSizesPromise = db.all(
+    `SELECT 
       pizza_type_id as id, size, price
     FROM 
       pizzas
-  `);
+  `
+  );
 
   const [pizzas, pizzaSizes] = await Promise.all([
     pizzasPromise,
@@ -81,26 +62,24 @@ server.get("/api/pizzas", async function getPizzas(req, res) {
 });
 
 server.get("/api/pizza-of-the-day", async function getPizzaOfTheDay(req, res) {
-  const pizzas = await query(`
-    SELECT 
+  const pizzas = await db.all(
+    `SELECT 
       pizza_type_id as id, name, category, ingredients as description
     FROM 
-      pizza_types
-  `);
+      pizza_types`
+  );
 
   const daysSinceEpoch = Math.floor(Date.now() / 86400000);
   const pizzaIndex = daysSinceEpoch % pizzas.length;
   const pizza = pizzas[pizzaIndex];
 
-  const sizes = await query(
-    `
-    SELECT
+  const sizes = await db.all(
+    `SELECT
       size, price
     FROM
       pizzas
     WHERE
-      pizza_type_id = $1
-  `,
+      pizza_type_id = ?`,
     [pizza.id]
   );
 
@@ -122,22 +101,21 @@ server.get("/api/pizza-of-the-day", async function getPizzaOfTheDay(req, res) {
 });
 
 server.get("/api/orders", async function getOrders(req, res) {
-  const orders = await query("SELECT order_id, date, time FROM orders");
+  const id = req.query.id;
+  const orders = await db.all("SELECT order_id, date, time FROM orders");
+
   res.send(orders);
 });
 
 server.get("/api/order", async function getOrders(req, res) {
   const id = req.query.id;
-  const orderPromise = query(
-    "SELECT order_id, date, time FROM orders WHERE order_id = $1",
+  const orderPromise = db.get(
+    "SELECT order_id, date, time FROM orders WHERE order_id = ?",
     [id]
   );
-
-  const orderItemsPromise = query(
-    `
-    SELECT 
-      t.pizza_type_id as pizzaTypeId, t.name, t.category, t.ingredients as description, 
-      o.quantity, p.price, o.quantity * p.price as total, p.size
+  const orderItemsPromise = db.all(
+    `SELECT 
+      t.pizza_type_id as pizzaTypeId, t.name, t.category, t.ingredients as description, o.quantity, p.price, o.quantity * p.price as total, p.size
     FROM 
       order_details o
     JOIN
@@ -149,8 +127,7 @@ server.get("/api/order", async function getOrders(req, res) {
     ON
       p.pizza_type_id = t.pizza_type_id
     WHERE 
-      order_id = $1
-  `,
+      order_id = ?`,
     [id]
   );
 
@@ -170,7 +147,7 @@ server.get("/api/order", async function getOrders(req, res) {
   const total = orderItems.reduce((acc, item) => acc + item.total, 0);
 
   res.send({
-    order: Object.assign({ total }, order[0]),
+    order: Object.assign({ total }, order),
     orderItems,
   });
 });
@@ -179,6 +156,7 @@ server.post("/api/order", async function createOrder(req, res) {
   const { cart } = req.body;
 
   const now = new Date();
+  // forgive me Date gods, for I have sinned
   const time = now.toLocaleTimeString("en-US", { hour12: false });
   const date = now.toISOString().split("T")[0];
 
@@ -187,15 +165,14 @@ server.post("/api/order", async function createOrder(req, res) {
     return;
   }
 
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await db.run("BEGIN TRANSACTION");
 
-    const result = await client.query(
-      "INSERT INTO orders (date, time) VALUES ($1, $2) RETURNING order_id",
+    const result = await db.run(
+      "INSERT INTO orders (date, time) VALUES (?, ?)",
       [date, time]
     );
-    const orderId = result.rows[0].order_id;
+    const orderId = result.lastID;
 
     const mergedCart = cart.reduce((acc, item) => {
       const id = item.pizza.id;
@@ -216,37 +193,31 @@ server.post("/api/order", async function createOrder(req, res) {
 
     for (const item of Object.values(mergedCart)) {
       const { pizzaId, quantity } = item;
-      await client.query(
-        "INSERT INTO order_details (order_id, pizza_id, quantity) VALUES ($1, $2, $3)",
+      await db.run(
+        "INSERT INTO order_details (order_id, pizza_id, quantity) VALUES (?, ?, ?)",
         [orderId, pizzaId, quantity]
       );
     }
 
-    await client.query("COMMIT");
+    await db.run("COMMIT");
+
     res.send({ orderId });
   } catch (error) {
-    await client.query("ROLLBACK");
     req.log.error(error);
+    await db.run("ROLLBACK");
     res.status(500).send({ error: "Failed to create order" });
-  } finally {
-    client.release();
   }
 });
 
 server.get("/api/past-orders", async function getPastOrders(req, res) {
+  await new Promise((resolve) => setTimeout(resolve, 5000));
   try {
-    const page = Number.parseInt(req.query.page, 10) || 1;
+    const page = parseInt(req.query.page, 10) || 1;
     const limit = 20;
     const offset = (page - 1) * limit;
-    const pastOrders = await query(
-      `
-      SELECT order_id, date, time 
-      FROM orders 
-      ORDER BY order_id DESC 
-      LIMIT $1 
-      OFFSET $2
-    `,
-      [limit, offset]
+    const pastOrders = await db.all(
+      "SELECT order_id, date, time FROM orders ORDER BY order_id DESC LIMIT 10 OFFSET ?",
+      [offset]
     );
     res.send(pastOrders);
   } catch (error) {
@@ -259,25 +230,19 @@ server.get("/api/past-order/:order_id", async function getPastOrder(req, res) {
   const orderId = req.params.order_id;
 
   try {
-    const order = await query(
-      `
-      SELECT order_id, date, time 
-      FROM orders 
-      WHERE order_id = $1
-    `,
+    const order = await db.get(
+      "SELECT order_id, date, time FROM orders WHERE order_id = ?",
       [orderId]
     );
 
-    if (order.length === 0) {
+    if (!order) {
       res.status(404).send({ error: "Order not found" });
       return;
     }
 
-    const orderItems = await query(
-      `
-      SELECT 
-        t.pizza_type_id as pizzaTypeId, t.name, t.category, t.ingredients as description, 
-        o.quantity, p.price, o.quantity * p.price as total, p.size
+    const orderItems = await db.all(
+      `SELECT 
+        t.pizza_type_id as pizzaTypeId, t.name, t.category, t.ingredients as description, o.quantity, p.price, o.quantity * p.price as total, p.size
       FROM 
         order_details o
       JOIN
@@ -289,8 +254,7 @@ server.get("/api/past-order/:order_id", async function getPastOrder(req, res) {
       ON
         p.pizza_type_id = t.pizza_type_id
       WHERE 
-        order_id = $1
-    `,
+        order_id = ?`,
       [orderId]
     );
 
@@ -308,7 +272,7 @@ server.get("/api/past-order/:order_id", async function getPastOrder(req, res) {
     );
 
     res.send({
-      order: Object.assign({ total }, order[0]),
+      order: Object.assign({ total }, order),
       orderItems: formattedOrderItems,
     });
   } catch (error) {
