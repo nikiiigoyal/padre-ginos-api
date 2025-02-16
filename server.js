@@ -1,27 +1,28 @@
 import fastify from "fastify";
-import fastifyStatic from "@fastify/static";
+import { AsyncDatabase } from "promised-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
-import { AsyncDatabase } from "promised-sqlite3";
-
-const server = fastify({
-  logger: {
-    transport: {
-      target: "pino-pretty",
-    },
-  },
-});
 
 const PORT = process.env.PORT || 3000;
+const HOST = "RENDER" in process.env ? `0.0.0.0` : `localhost`;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const db = await AsyncDatabase.open("./pizza.sqlite");
 
-server.register(fastifyStatic, {
-  root: path.join(__dirname, "public"),
-  prefix: "/public/",
+const server = fastify();
+
+// Add CORS support
+server.addHook("preHandler", (req, res, done) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST");
+  res.header("Access-Control-Allow-Headers", "*");
+  const isPreflight = /options/i.test(req.method);
+  if (isPreflight) {
+    return res.send();
+  }
+  done();
 });
 
 server.get("/api/pizzas", async function getPizzas(req, res) {
@@ -53,7 +54,7 @@ server.get("/api/pizzas", async function getPizzas(req, res) {
       name: pizza.name,
       category: pizza.category,
       description: pizza.description,
-      image: `/public/pizzas/${pizza.pizza_type_id}.webp`,
+      image: `/pizzas/${pizza.pizza_type_id}.webp`,
       sizes,
     };
   });
@@ -93,7 +94,7 @@ server.get("/api/pizza-of-the-day", async function getPizzaOfTheDay(req, res) {
     name: pizza.name,
     category: pizza.category,
     description: pizza.description,
-    image: `/public/pizzas/${pizza.id}.webp`,
+    image: `/pizzas/${pizza.id}.webp`,
     sizes: sizeObj,
   };
 
@@ -138,7 +139,7 @@ server.get("/api/order", async function getOrders(req, res) {
 
   const orderItems = orderItemsRes.map((item) =>
     Object.assign({}, item, {
-      image: `/public/pizzas/${item.pizzaTypeId}.webp`,
+      image: `/pizzas/${item.pizzaTypeId}.webp`,
       quantity: +item.quantity,
       price: +item.price,
     })
@@ -156,7 +157,6 @@ server.post("/api/order", async function createOrder(req, res) {
   const { cart } = req.body;
 
   const now = new Date();
-  // forgive me Date gods, for I have sinned
   const time = now.toLocaleTimeString("en-US", { hour12: false });
   const date = now.toISOString().split("T")[0];
 
@@ -210,7 +210,6 @@ server.post("/api/order", async function createOrder(req, res) {
 });
 
 server.get("/api/past-orders", async function getPastOrders(req, res) {
-  await new Promise((resolve) => setTimeout(resolve, 5000));
   try {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = 20;
@@ -260,7 +259,7 @@ server.get("/api/past-order/:order_id", async function getPastOrder(req, res) {
 
     const formattedOrderItems = orderItems.map((item) =>
       Object.assign({}, item, {
-        image: `/public/pizzas/${item.pizzaTypeId}.webp`,
+        image: `/pizzas/${item.pizzaTypeId}.webp`,
         quantity: +item.quantity,
         price: +item.price,
       })
@@ -300,7 +299,7 @@ server.post("/api/contact", async function contactForm(req, res) {
 
 const start = async () => {
   try {
-    await server.listen({ port: PORT });
+    await server.listen({ host: HOST, port: PORT });
     console.log(`Server listening on port ${PORT}`);
   } catch (err) {
     console.error(err);
